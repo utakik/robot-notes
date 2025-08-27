@@ -1,108 +1,105 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>string swing</title>
-  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.2/lib/p5.min.js"></script>
-  <style>
-    html,body{margin:0;height:100%;background:#fff;}
-    #permWrap{
-      position:fixed; inset:0; display:none; place-items:center;
-      background:rgba(255,255,255,.96); font-family:system-ui, -apple-system, "Segoe UI", Roboto;
+#pendulum {
+  transform-origin: top center;
+  will-change: transform; /* ブラウザに最適化のヒント */
+  display: inline-block;
+}
+
+<script>
+// ====== 調整用パラメータ ======
+const DEADZONE_G = 0.04;     // これ未満は0扱い（微振動カット）
+const ALPHA = 0.12;          // ローパス係数（小さいほどなめらか）
+const STIFFNESS = 18.0;      // ばね係数（強いと復元が速い）
+const DAMPING = 3.2;         // 減衰（大きいほどすぐ止まる）
+const MAX_ANGLE_DEG = 22;    // 見た目の最大振れ角
+const DRIVE_GAIN = 0.9;      // 入力→トルクの増幅
+
+// ====== 要素取得 ======
+const pendulum = document.getElementById('pendulum');
+if (!pendulum) { console.warn('pendulum要素が見つかりません'); }
+
+// ====== センサー許可（iOSなど） ======
+async function askPermissionIfNeeded() {
+  try {
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const r = await DeviceMotionEvent.requestPermission();
+      // 必要なら結果でUI分岐
     }
-    #permBtn{padding:.8rem 1.1rem; border:1px solid #999; border-radius:10px; background:#fafafa}
-    canvas{display:block}
-  </style>
-</head>
-<body>
-  <!-- iOSのセンサー権限ボタン（必要時のみ表示） -->
-  <div id="permWrap"><button id="permBtn">センサー入力を許可</button></div>
-
-  <script>
-    //--- 物理パラメータ（糸だけの振り子） ---
-    let theta = 0;          // 角度 [rad]（0 = まっすぐ下）
-    let omega = 0;          // 角速度
-    const L = 0.42;         // 見かけの長さ（画面高に対する比で効きが変わる）
-    const g = 9.81;         // 重力定数（相対値）
-    const damping = 0.015;  // 減衰
-
-    // 入力（スマホ：加速度、PC：マウス揺れ）
-    let mobileAx = 0;
-    let lastMouseX = null, mouseV = 0;
-
-    function setup(){
-      createCanvas(windowWidth, windowHeight);
-      // iOS 13+ でセンサー許可が必要ならボタンを出す
-      const needPerm = typeof DeviceMotionEvent !== "undefined"
-        && typeof DeviceMotionEvent.requestPermission === "function";
-      if (needPerm) {
-        const wrap = document.getElementById('permWrap');
-        const btn  = document.getElementById('permBtn');
-        wrap.style.display = 'grid';
-        btn.onclick = async () => {
-          try {
-            const r = await DeviceMotionEvent.requestPermission();
-            if (r === 'granted') {
-              wrap.style.display = 'none';
-              window.addEventListener('devicemotion', onMotion, true);
-            }
-          } catch(e){ console.log(e); }
-        };
-      } else {
-        // 権限不要な環境（Androidなど）はそのままリスン
-        if ('DeviceMotionEvent' in window){
-          window.addEventListener('devicemotion', onMotion, true);
-        }
-      }
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r2 = await DeviceOrientationEvent.requestPermission();
     }
+  } catch(e) { console.warn(e); }
+}
+document.addEventListener('click', askPermissionIfNeeded, { once:true });
+document.addEventListener('touchstart', askPermissionIfNeeded, { once:true });
 
-    function onMotion(e){
-      // 横方向の加速度（傾きや振り）を入力として使う
-      if (e.accelerationIncludingGravity){
-        mobileAx = e.accelerationIncludingGravity.x || 0;
-      }
-    }
+// ====== 入力（加速度/姿勢）をローパス＆デッドゾーン ======
+let filtX = 0, filtY = 0; // g単位相当のなまし値
+function applyDeadzone(v, dz) {
+  return Math.abs(v) < dz ? 0 : v;
+}
 
-    function draw(){
-      background(255);
+// devicemotion（傾けた方向の重力成分を拾う）
+window.addEventListener('devicemotion', (e) => {
+  if (!e.accelerationIncludingGravity) return;
+  const ax = e.accelerationIncludingGravity.x / 9.80665; // g換算
+  const ay = e.accelerationIncludingGravity.y / 9.80665;
+  // デッドゾーン→ローパス
+  const dx = applyDeadzone(ax, DEADZONE_G);
+  const dy = applyDeadzone(ay, DEADZONE_G);
+  filtX = filtX + ALPHA * (dx - filtX);
+  filtY = filtY + ALPHA * (dy - filtY);
+}, { passive:true });
 
-      // --- 入力の統合 ---
-      // モバイル優先、なければマウス速度
-      let input = 0;
-      if (abs(mobileAx) > 0.01) {
-        input = mobileAx * 0.03; // スケール調整
-      } else {
-        // マウスの横方向速度から疑似外力を作る
-        if (lastMouseX === null) lastMouseX = mouseX;
-        mouseV = (mouseX - lastMouseX) * 0.002;
-        lastMouseX = mouseX;
-        input = mouseIsPressed ? mouseV * 2.0 : mouseV; // ドラッグ時は強めに
-      }
+// deviceorientation（gamma/betaから向き推定：機種差吸収用の予備）
+let oriGamma = 0, oriBeta = 0;
+window.addEventListener('deviceorientation', (e) => {
+  // gamma: 左右（-90〜90）、beta: 前後（-180〜180）
+  if (e.gamma != null) oriGamma = e.gamma / 90;  // おおよそ±1に正規化
+  if (e.beta  != null) oriBeta  = e.beta  / 180; // おおよそ±1に正規化
+}, { passive:true });
 
-      // --- 振り子の簡易方程式 ---
-      // θ'' = -(g/L) * sinθ - c*θ' + 入力
-      const accel = -(g / (L * 60)) * Math.sin(theta) - damping * omega + input;
-      omega += accel;
-      omega *= (1 - damping * 0.5); // ちょい減衰
-      theta += omega;
+// デスクトップ確認用（マウスで傾き代用）
+if (!('ontouchstart' in window)) {
+  window.addEventListener('mousemove', (e) => {
+    const nx = (e.clientX / window.innerWidth) * 2 - 1;  // -1..1
+    const ny = (e.clientY / window.innerHeight) * 2 - 1; // -1..1
+    // 混ぜる：PCではこちらが主、モバイルでは devicemotion が主
+    filtX = filtX + ALPHA * ((nx*0.6) - filtX);
+    filtY = filtY + ALPHA * ((ny*0.6) - filtY);
+  });
+}
 
-      // --- 描画（画面中心から吊るす） ---
-      const cx = width/2, top = 0;
-      const lenPix = height * 0.45; // 見かけの長さ
-      const endX = cx + lenPix * Math.sin(theta);
-      const endY = top + lenPix * Math.cos(theta);
+// ====== 物理“振り子”シミュレーション（減衰付き） ======
+let angle = 0;        // 現在角度 [rad]
+let angVel = 0;       // 角速度
+let lastT = performance.now();
 
-      stroke(0); strokeWeight(3); line(cx, top, endX, endY);
+function step(now) {
+  const dt = Math.min(0.032, (now - lastT) / 1000); // 安定のためdt上限
+  lastT = now;
 
-      // ガイド（任意）
-      noStroke(); fill(0); textSize(12);
-      const mode = (abs(mobileAx) > 0.01) ? 'モバイル（センサー）' :
-                   (mouseIsPressed ? 'PC（ドラッグ入力）' : 'PC（マウス移動）');
-      text(mode, 12, 20);
-    }
+  // 入力→トルク：横成分を採用（端末左右の傾きでぶら下げが揺れる感）
+  // devicemotion優先、なければorientationを混ぜる
+  const inputX = (Math.abs(filtX) > 0 ? filtX : oriGamma) * DRIVE_GAIN;
 
-    function windowResized(){ resizeCanvas(windowWidth, windowHeight); }
-  </script>
-</body>
-</html>
+  // 単振り子っぽい運動： angle'' + c*angle' + k*angle = torque
+  const torque = inputX;                    // 外力
+  const accel = torque - DAMPING*angVel - STIFFNESS*angle;
+
+  angVel += accel * dt;
+  angle  += angVel * dt;
+
+  // 見た目の制限（過大回転を避ける）
+  const maxRad = MAX_ANGLE_DEG * Math.PI/180;
+  angle = Math.max(-maxRad, Math.min(maxRad, angle));
+
+  // 描画
+  if (pendulum) {
+    const deg = angle * 180/Math.PI;
+    pendulum.style.transform = `rotate(${deg}deg)`;
+  }
+
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
