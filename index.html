@@ -3,49 +3,26 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>String Swing (sensor)</title>
+<title>String Swing (iPad axis-mapped)</title>
 <style>
-  /* 全画面センタリング */
   html, body { height: 100%; margin: 0; }
   body { display: grid; place-items: center; font-family: system-ui, sans-serif; }
+  #pendulum { transform-origin: top center; display:inline-block; will-change: transform; user-select:none; touch-action:manipulation; }
+  .string { width: 2px; height: 140px; background:#111; margin:0 auto; }
+  .weight { width: 22px; height: 22px; background:#111; border-radius:50%; margin:0 auto; }
 
-  /* ひも＋重り */
-  #pendulum {
-    transform-origin: top center;
-    display: inline-block;
-    will-change: transform;
-    user-select: none;
-    touch-action: manipulation;
-  }
-  .string {
-    width: 2px;          /* ひもの太さ */
-    height: 140px;       /* ひもの長さ */
-    background: #111;
-    margin: 0 auto;
-  }
-  .weight {
-    width: 22px; height: 22px;
-    background: #111;
-    border-radius: 50%;
-    margin: 0 auto;
-  }
+  #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem 1.2rem;
+          border:1px solid #888; border-radius:.6rem; background:#fff; font-size:16px; cursor:pointer;
+          box-shadow:0 4px 16px rgba(0,0,0,.15); }
+  #perm.hidden { display:none; }
 
-  /* 許可ボタン */
-  #perm {
-    position: fixed; inset: 0; margin: auto;
-    width: max(220px, 40vw);
-    padding: 1rem 1.2rem;
-    border: 1px solid #888; border-radius: .6rem;
-    background: #fff; font-size: 16px; cursor: pointer;
-    box-shadow: 0 4px 16px rgba(0,0,0,.15);
-  }
-  #perm.hidden { display: none; }
+  .hint { position:fixed; top:.6rem; left:50%; transform:translateX(-50%); font-size:12px; opacity:.6; text-align:center; }
 
-  /* ヒント */
-  .hint {
-    position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
-    font-size: 12px; opacity: .6;
-  }
+  /* デバッグ＆キャリブレーション */
+  #debug { position:fixed; right:.6rem; top:.6rem; font:12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+           padding:.5rem .6rem; background:rgba(255,255,255,.9); border:1px solid #ddd; border-radius:.5rem; }
+  #debug button, #debug label { margin-top:.4rem; display:block; }
+  #debug input[type="range"] { width:160px; }
 </style>
 </head>
 <body>
@@ -55,21 +32,41 @@
   </div>
 
   <button id="perm" class="hidden">センサーを有効にする</button>
-  <div class="hint">モバイルは端末を傾けてください。PCはマウス移動でも揺れます。</div>
+  <div class="hint">端末を左右に傾けてください（iPadは向きに追従）。PCはマウスでも可。</div>
+
+  <div id="debug">
+    <div>ori angle: <span id="oa">?</span>°</div>
+    <div>beta: <span id="ob">?</span> / gamma: <span id="og">?</span></div>
+    <div>LR tilt: <span id="lr">?</span></div>
+    <div>angle°: <span id="an">?</span></div>
+    <label>GAIN <input id="gain" type="range" min="0.5" max="4" step="0.1" value="2.0"></label>
+    <label>DEADZONE <input id="dz" type="range" min="0" max="0.08" step="0.005" value="0.02"></label>
+    <button id="cal">Calibrate（今の向きをゼロに）</button>
+    <label><input id="inv" type="checkbox"> 反転（左右が逆に感じたら）</label>
+  </div>
 
 <script>
-/* ========= 調整パラメータ ========= */
-const DEADZONE_G    = 0.02;  // 微振動カット（0.03〜0.08くらいで調整）
-const ALPHA         = 0.12;  // ローパス係数（小さいほど滑らか）
-const STIFFNESS     = 18.0;  // 復元力（小→ゆったり／大→キビキビ）
-const DAMPING       = 3.2;   // 減衰（大きいほど早く止まる）
-const MAX_ANGLE_DEG = 22;    // 最大振れ角（見た目の上限）
-const DRIVE_GAIN    = 2.9;   // 入力→トルク増幅
+/* ===== 調整パラメータ（初期） ===== */
+let DEADZONE_G = 0.02;              // iPadで小さめ入力に合わせて低め
+const ALPHA = 0.12;
+const STIFFNESS = 18.0;
+const DAMPING = 3.2;
+const MAX_ANGLE_DEG = 22;
+let DRIVE_GAIN = 2.0;               // 反応強め
+const USE_ORIENTATION = true;       // iPadは orientation を主に使う
 
+/* ===== 参照 ===== */
 const pendulum = document.getElementById('pendulum');
 const permBtn  = document.getElementById('perm');
+const oa = document.getElementById('oa'), ob = document.getElementById('ob'), og = document.getElementById('og');
+const lrEl = document.getElementById('lr'), anEl = document.getElementById('an');
+const gainEl = document.getElementById('gain'), dzEl = document.getElementById('dz');
+const calBtn = document.getElementById('cal'), invCb = document.getElementById('inv');
 
-/* ========= iOSなどの許可ボタン制御 ========= */
+gainEl.addEventListener('input', ()=> DRIVE_GAIN = parseFloat(gainEl.value));
+dzEl.addEventListener('input', ()=> DEADZONE_G = parseFloat(dzEl.value));
+
+/* ===== 許可（iOS系は必須） ===== */
 async function askSensorPermission() {
   try {
     if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -78,63 +75,88 @@ async function askSensorPermission() {
     if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
       await DeviceOrientationEvent.requestPermission();
     }
-  } catch (e) {
-    console.warn('sensor permission:', e);
-  }
+  } catch(e) { console.warn('sensor permission:', e); }
   permBtn.classList.add('hidden');
 }
-
-// iOS系ならボタンを表示
 const needMotionPerm = window.DeviceMotionEvent &&
                        typeof DeviceMotionEvent.requestPermission === 'function';
 const needOrientPerm = window.DeviceOrientationEvent &&
                        typeof DeviceOrientationEvent.requestPermission === 'function';
-if (needMotionPerm || needOrientPerm) {
-  permBtn.classList.remove('hidden');
+if (needMotionPerm || needOrientPerm) permBtn.classList.remove('hidden');
+permBtn.addEventListener('click', askSensorPermission, { once:true });
+document.addEventListener('touchstart', askSensorPermission, { once:true, passive:true });
+document.addEventListener('click',       askSensorPermission, { once:true });
+
+/* ===== 画面の向きを取得（0/90/180/270） ===== */
+function screenAngle(){
+  // 新: Screen Orientation API
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  // 旧: window.orientation（iOSで残ってることがある）
+  if (typeof window.orientation === 'number') return ((window.orientation % 360)+360)%360;
+  return 0;
 }
 
-// ボタン or タップで要求
-permBtn.addEventListener('click', askSensorPermission, { once: true });
-document.addEventListener('touchstart', askSensorPermission, { once: true, passive: true });
-document.addEventListener('click',       askSensorPermission, { once: true });
+/* ===== orientation から「画面の左右への傾き」を作る =====
+   - portrait(0,180) → gamma を使う
+   - landscape(90,270) → beta を使う
+   端末差の符号ズレは calibration と invert で吸収
+*/
+let lastBeta = 0, lastGamma = 0;
+let zeroOffset = 0;   // その場のゼロ合わせ
+let invert = 1;
 
-/* ========= 入力のローパス＋デッドゾーン ========= */
-let filtX = 0, filtY = 0;
-function dz(v, t){ return Math.abs(v) < t ? 0 : v; }
+invCb.addEventListener('change', ()=> invert = invCb.checked ? -1 : 1);
+calBtn.addEventListener('click', ()=> { zeroOffset = computeLR(); });
 
+window.addEventListener('deviceorientation', (e) => {
+  if (typeof e.beta  === 'number') lastBeta  = e.beta;   // 前後（-180..180）
+  if (typeof e.gamma === 'number') lastGamma = e.gamma;  // 左右（-90..90）
+}, { passive:true });
+
+function computeLR(){
+  const ang = screenAngle(); // 0,90,180,270
+  let lr; // -1..1 相当
+  if (ang === 0)       lr = ( lastGamma ) / 90;   // portrait ↑
+  else if (ang === 180)lr = (-lastGamma) / 90;   // portrait 逆さ
+  else if (ang === 90) lr = ( lastBeta  ) / 90;  // landscape（右が上）
+  else if (ang === 270)lr = (-lastBeta ) / 90;   // landscape（左が上）
+  else lr = ( lastGamma ) / 90;
+
+  // 0点＆反転適用、デッドゾーン
+  lr = invert * (lr - zeroOffset);
+  if (Math.abs(lr) < DEADZONE_G) lr = 0;
+  return lr;
+}
+
+/* ===== devicemotion（補助） ===== */
+let filtX = 0, lastAX = 0;
+function dz(v,t){ return Math.abs(v) < t ? 0 : v; }
 window.addEventListener('devicemotion', (e) => {
   const g = e.accelerationIncludingGravity;
   if (!g) return;
-  const ax = (g.x ?? 0) / 9.80665;   // g単位に正規化
-  const ay = (g.y ?? 0) / 9.80665;
-  const dx = dz(ax, DEADZONE_G), dy = dz(ay, DEADZONE_G);
-  filtX += ALPHA * (dx - filtX);
-  filtY += ALPHA * (dy - filtY);
+  const ax = (g.x ?? 0) / 9.80665;  // 端末軸の違いがあるため orientation 優先、こちらは補助に
+  lastAX = ax;
+  filtX += ALPHA * (dz(ax, DEADZONE_G) - filtX);
 }, { passive:true });
 
-let oriGamma = 0; // -1..1相当
-window.addEventListener('deviceorientation', (e) => {
-  if (e && e.gamma != null) oriGamma = e.gamma / 90; // 左右
-}, { passive:true });
-
-/* デスクトップ用：マウスで代用 */
+/* デスクトップ代用 */
 if (!('ontouchstart' in window)) {
   window.addEventListener('mousemove', (e) => {
-    const nx = (e.clientX / innerWidth) * 2 - 1;   // -1..1
+    const nx = (e.clientX / innerWidth) * 2 - 1;
     filtX += ALPHA * ((nx*0.6) - filtX);
   });
 }
 
-/* ========= 減衰付き“振り子”シミュレーション ========= */
-let angle = 0;      // [rad]
-let angVel = 0;
-let lastT = performance.now();
+/* ===== 減衰付き振り子 ===== */
+let angle = 0, angVel = 0, lastT = performance.now();
 
 function tick(now){
   const dt = Math.min(0.032, (now - lastT)/1000); lastT = now;
 
-  // devicemotion優先、なければorientation
-  const inputX = (Math.abs(filtX) > 0.001 ? filtX : oriGamma) * DRIVE_GAIN;
+  // iPadは orientation を主、加速度は補助に（どちらか大きい方を採用）
+  const lr = computeLR();                 // -1..1
+  const inputNorm = USE_ORIENTATION ? ( Math.abs(lr) > Math.abs(filtX) ? lr : filtX ) : filtX;
+  const inputX = inputNorm * DRIVE_GAIN;
 
   // angle'' + DAMPING*angle' + STIFFNESS*angle = inputX
   const accel = inputX - DAMPING*angVel - STIFFNESS*angle;
@@ -149,9 +171,20 @@ function tick(now){
   // 描画
   pendulum.style.transform = `rotate(${angle*180/Math.PI}deg)`;
 
+  // デバッグ表示
+  oa.textContent = screenAngle();
+  ob.textContent = lastBeta.toFixed(1);
+  og.textContent = lastGamma.toFixed(1);
+  lrEl.textContent = inputNorm.toFixed(3);
+  anEl.textContent = (angle*180/Math.PI).toFixed(1);
+
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
+
+/* 画面向きが変わったらゼロも取り直しやすいようリスナ */
+window.addEventListener('orientationchange', ()=> { setTimeout(()=>{ zeroOffset = computeLR(); }, 50); });
+if (screen.orientation) screen.orientation.addEventListener('change', ()=> { setTimeout(()=>{ zeroOffset = computeLR(); }, 50); });
 </script>
 </body>
 </html>
