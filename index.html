@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>String Swing (sensor)</title>
 <style>
-  /* 画面センタリング */
+  /* 全画面センタリング */
   html, body { height: 100%; margin: 0; }
   body { display: grid; place-items: center; font-family: system-ui, sans-serif; }
 
@@ -30,24 +30,26 @@
     margin: 0 auto;
   }
 
-  /* iOSなど用：許可ボタン */
+  /* 許可ボタン */
   #perm {
-    position: fixed; inset: auto 1rem 1rem auto;
-    padding: .6rem .9rem; border: 1px solid #888; border-radius: .5rem;
-    background: #fff; font-size: 14px; cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,.12);
+    position: fixed; inset: 0; margin: auto;
+    width: max(220px, 40vw);
+    padding: 1rem 1.2rem;
+    border: 1px solid #888; border-radius: .6rem;
+    background: #fff; font-size: 16px; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,.15);
   }
   #perm.hidden { display: none; }
 
   /* ヒント */
   .hint {
     position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
-    font-size: 12px; opacity: .7;
+    font-size: 12px; opacity: .6;
   }
 </style>
 </head>
 <body>
-  <div id="pendulum" aria-label="swinging string">
+  <div id="pendulum">
     <div class="string"></div>
     <div class="weight"></div>
   </div>
@@ -68,22 +70,33 @@ const pendulum = document.getElementById('pendulum');
 const permBtn  = document.getElementById('perm');
 
 /* ========= iOSなどの許可ボタン制御 ========= */
-(function setupPermissionButton(){
-  const needMotionPerm = window.DeviceMotionEvent &&
-                         typeof DeviceMotionEvent.requestPermission === 'function';
-  const needOrientPerm = window.DeviceOrientationEvent &&
-                         typeof DeviceOrientationEvent.requestPermission === 'function';
-  if (needMotionPerm || needOrientPerm) permBtn.classList.remove('hidden');
-
-  async function ask() {
-    try {
-      if (needMotionPerm) await DeviceMotionEvent.requestPermission();
-      if (needOrientPerm) await DeviceOrientationEvent.requestPermission();
-    } catch(e) { console.warn(e); }
-    permBtn.classList.add('hidden');
+async function askSensorPermission() {
+  try {
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+      await DeviceMotionEvent.requestPermission();
+    }
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      await DeviceOrientationEvent.requestPermission();
+    }
+  } catch (e) {
+    console.warn('sensor permission:', e);
   }
-  permBtn.addEventListener('click', ask, { once: true });
-})();
+  permBtn.classList.add('hidden');
+}
+
+// iOS系ならボタンを表示
+const needMotionPerm = window.DeviceMotionEvent &&
+                       typeof DeviceMotionEvent.requestPermission === 'function';
+const needOrientPerm = window.DeviceOrientationEvent &&
+                       typeof DeviceOrientationEvent.requestPermission === 'function';
+if (needMotionPerm || needOrientPerm) {
+  permBtn.classList.remove('hidden');
+}
+
+// ボタン or タップで要求
+permBtn.addEventListener('click', askSensorPermission, { once: true });
+document.addEventListener('touchstart', askSensorPermission, { once: true, passive: true });
+document.addEventListener('click',       askSensorPermission, { once: true });
 
 /* ========= 入力のローパス＋デッドゾーン ========= */
 let filtX = 0, filtY = 0;
