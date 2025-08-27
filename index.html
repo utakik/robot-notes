@@ -29,7 +29,10 @@
   </svg>
 
   <button id="perm" class="hidden">センサーを有効にする</button>
-  <div id="hud">スマホは傾けて、PCはマウス移動/ドラッグで揺らせます。</div>
+  <div id="hud">
+  スマホは傾けて、PCはマウス移動/ドラッグで揺らせます。<br>
+  <label><input type="checkbox" id="inv"> 反転（左右逆に感じたらON）</label>
+</div>
 
 <script>
 /* ===== パラメータ（お好みで） ===== */
@@ -40,6 +43,11 @@ const AIR_DAMP  = 0.005;   // 空気抵抗（0〜0.03）
 const GRAVITY_Y = 600;    // 下向き重力 [px/s^2]
 let   GAIN_X    = 1200;    // 横方向の力スケール（傾き→力）
 let   DEADZONE  = 0.02;   // 小さな傾き無視
+let invert = 1;
+const invBox = document.getElementById('inv');
+invBox.addEventListener('change', (e)=>{
+invert = e.target.checked ? -1 : 1;
+});
 
 /* ===== 参照 ===== */
 const svg  = document.getElementById('stage');
@@ -129,7 +137,7 @@ function step(now){
   const dt2 = dt*dt;
 
   // 1) 力：下向き重力 + 横力（傾き）
-  const ax = tiltX * GAIN_X;  // px/s^2
+  const ax = tiltX * GAIN_X * invert;
   const ay = GRAVITY_Y;
 
   for(let i=1;i<N;i++){ // 先頭は固定なので除外
