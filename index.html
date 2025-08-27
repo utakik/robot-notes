@@ -134,7 +134,7 @@ function tick(now){
   const dt = Math.min(0.032, (now - lastT)/1000); lastT = now;
 
   // devicemotion優先、なければorientation
-  const inputX = (Math.abs(filtX) > 0 ? filtX : oriGamma) * DRIVE_GAIN;
+  const inputX = (Math.abs(filtX) > 0.001 ? filtX : oriGamma) * DRIVE_GAIN;
 
   // angle'' + DAMPING*angle' + STIFFNESS*angle = inputX
   const accel = inputX - DAMPING*angVel - STIFFNESS*angle;
