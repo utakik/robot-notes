@@ -3,167 +3,183 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>String Swing (gravity → screen-axis)</title>
+<title>String Swing – Jointed Rope</title>
 <style>
-  html, body { height: 100%; margin: 0; }
-  body { display: grid; place-items: center; font-family: system-ui, sans-serif; }
-  #pendulum { transform-origin: top center; display:inline-block; will-change: transform; user-select:none; }
-  .string { width: 2px; height: 140px; background:#111; margin:0 auto; }
-  .weight { width: 22px; height: 22px; background:#111; border-radius:50%; margin:0 auto; }
+  html, body { height: 100%; margin: 0; background:#fff; }
+  body { display:grid; place-items:center; font-family:system-ui, sans-serif; user-select:none; touch-action:manipulation; }
 
+  /* 画面中央にSVGキャンバス */
+  #stage { width:min(90vw,520px); height:min(70vh,520px); display:block; }
+
+  /* 許可ボタン */
   #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem 1.2rem;
           border:1px solid #888; border-radius:.6rem; background:#fff; font-size:16px; cursor:pointer;
           box-shadow:0 4px 16px rgba(0,0,0,.15); }
   #perm.hidden { display:none; }
 
-  .hint { position:fixed; top:.6rem; left:50%; transform:translateX(-50%); font-size:12px; opacity:.6; text-align:center; }
-
-  #debug { position:fixed; right:.6rem; top:.6rem; font:12px/1.3 ui-monospace, Menlo, monospace;
-           padding:.5rem .6rem; background:rgba(255,255,255,.9); border:1px solid #ddd; border-radius:.5rem; }
-  #debug button, #debug label { margin-top:.4rem; display:block; }
-  #debug input[type="range"] { width:160px; }
+  /* 簡易UI */
+  #hud{ position:fixed; top:.6rem; left:50%; transform:translateX(-50%); font-size:12px; opacity:.65; }
 </style>
 </head>
 <body>
-  <div id="pendulum">
-    <div class="string"></div>
-    <div class="weight"></div>
-  </div>
+  <svg id="stage" viewBox="0 0 400 400" aria-label="jointed rope">
+    <!-- アンカー位置（見えない）: (200, 40) -->
+    <path id="rope" d="" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" />
+    <circle id="bob" cx="200" cy="200" r="10" fill="#111"/>
+  </svg>
 
   <button id="perm" class="hidden">センサーを有効にする</button>
-  <div class="hint">端末を左右に傾けてください（画面の向きに自動追従）。PCはマウスでも可。</div>
-
-  <div id="debug">
-    <div>screen angle: <span id="sa">?</span>°</div>
-    <div>g.x: <span id="gx">?</span> / g.y: <span id="gy">?</span></div>
-    <div>screenX: <span id="sx">?</span></div>
-    <div>angle°: <span id="an">?</span></div>
-    <label>GAIN <input id="gain" type="range" min="0.5" max="4" step="0.1" value="2.0"></label>
-    <label>DEADZONE <input id="dz" type="range" min="0" max="0.08" step="0.005" value="0.02"></label>
-    <button id="cal">Calibrate（今の向きをゼロに）</button>
-    <label><input id="inv" type="checkbox"> 反転（左右が逆に感じたら）</label>
-  </div>
+  <div id="hud">スマホは傾けて、PCはマウス移動/ドラッグで揺らせます。</div>
 
 <script>
-/* ===== 調整パラメータ ===== */
-let DEADZONE = 0.02;          // 画面X成分のデッドゾーン（-1..1相当）
-const ALPHA  = 0.12;          // ローパス
-const STIFF  = 18.0;          // 復元力
-const DAMP   = 3.2;           // 減衰
-const MAX_DEG= 22;            // 見た目の最大角
-let GAIN     = 2.0;           // 入力増幅
+/* ===== パラメータ（お好みで） ===== */
+const NUM_SEG   = 16;     // 関節数（多いほど柔らかい）
+const SEG_LEN   = 10;     // 各節の長さ（px）
+const ITER      = 8;      // 制約反復（多いほどコシ強め）
+const AIR_DAMP  = 0.01;   // 空気抵抗（0〜0.03）
+const GRAVITY_Y = 600;    // 下向き重力 [px/s^2]
+let   GAIN_X    = 900;    // 横方向の力スケール（傾き→力）
+let   DEADZONE  = 0.02;   // 小さな傾き無視
 
 /* ===== 参照 ===== */
-const pendulum = document.getElementById('pendulum');
-const permBtn  = document.getElementById('perm');
-const sa = document.getElementById('sa'), gx = document.getElementById('gx'), gy = document.getElementById('gy');
-const sx = document.getElementById('sx'), an = document.getElementById('an');
-const gainEl = document.getElementById('gain'), dzEl = document.getElementById('dz');
-const calBtn = document.getElementById('cal'), invCb = document.getElementById('inv');
-gainEl.addEventListener('input', ()=> GAIN = parseFloat(gainEl.value));
-dzEl.addEventListener('input', ()=> DEADZONE = parseFloat(dzEl.value));
+const svg  = document.getElementById('stage');
+const rope = document.getElementById('rope');
+const bob  = document.getElementById('bob');
+const permBtn = document.getElementById('perm');
 
-/* ===== iOSの許可 ===== */
-async function askSensorPermission(){
-  try {
-    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
-      await DeviceMotionEvent.requestPermission();
-    }
-    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      await DeviceOrientationEvent.requestPermission();
-    }
-  } catch(e){ console.warn(e); }
-  permBtn.classList.add('hidden');
+/* ===== ロープ状態（Verlet） ===== */
+const N = NUM_SEG + 1; // 点の数
+const pts = new Array(N).fill().map(_=>({x:0,y:0,px:0,py:0}));
+const anchor = { x:200, y:40 }; // 固定点（SVG座標）
+
+function resetRope(){
+  for(let i=0;i<N;i++){
+    const x = anchor.x;
+    const y = anchor.y + i*SEG_LEN;
+    pts[i].x=x; pts[i].y=y; pts[i].px=x; pts[i].py=y;
+  }
 }
-const needMotionPerm = window.DeviceMotionEvent &&
-                       typeof DeviceMotionEvent.requestPermission === 'function';
-const needOrientPerm = window.DeviceOrientationEvent &&
-                       typeof DeviceOrientationEvent.requestPermission === 'function';
-if (needMotionPerm || needOrientPerm) permBtn.classList.remove('hidden');
-permBtn.addEventListener('click', askSensorPermission, { once:true });
-document.addEventListener('touchstart', askSensorPermission, { once:true, passive:true });
-document.addEventListener('click',       askSensorPermission, { once:true });
+resetRope();
 
-/* ===== 画面の回転角を取得（0/90/180/270） ===== */
+/* ===== 画面向き（0/90/180/270） ===== */
 function screenAngle(){
   if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
   if (typeof window.orientation === 'number') return ((window.orientation%360)+360)%360;
   return 0;
 }
 
-/* ===== 端末軸(ax,ay) → 画面軸(screenX,screenY) に回す =====
-   iOSの加速度は端末座標。画面が90°回っていれば、そのぶん逆回転して
-   「画面の右が +X」になるよう合わせる。az（奥行き）は使わない。 */
+/* ===== センサー入力：左右傾きだけ取り出す（弱い環境は0に近い） ===== */
+let tiltX = 0; // -1..1 相当（画面の左右）
 function toScreenAxes(ax, ay, angDeg){
-  const t = angDeg * Math.PI/180;  // 画面を -t 回転させるのと同じ
-  const c = Math.cos(t), s = Math.sin(t);
-  const screenX =  ax*c + ay*s;    // 画面の左右
-  const screenY = -ax*s + ay*c;    // 画面の上下（今回は未使用）
-  return { screenX, screenY };
+  const t = angDeg * Math.PI/180, c = Math.cos(t), s = Math.sin(t);
+  return { sx: ax*c + ay*s, sy: -ax*s + ay*c };
 }
-
-/* ===== 入力取得（重力ベクトル→画面X） ===== */
-let filtSX = 0, lastAX=0, lastAY=0;
-let zeroOffset = 0, invert = 1;
-
-invCb.addEventListener('change', ()=> invert = invCb.checked ? -1 : 1);
-calBtn.addEventListener('click', ()=> { zeroOffset = filtSX; });  // 今の値を0に
-
 window.addEventListener('devicemotion', (e)=>{
-  const g = e.accelerationIncludingGravity;
-  if (!g) return;
-  // gを「g単位」に正規化
-  const ax = (g.x ?? 0) / 9.80665;
-  const ay = (g.y ?? 0) / 9.80665;
-  lastAX = ax; lastAY = ay;
+  const g = e.accelerationIncludingGravity; if(!g) return;
+  const ax = (g.x??0)/9.80665, ay=(g.y??0)/9.80665;
+  const { sx } = toScreenAxes(ax, ay, screenAngle());
+  tiltX += 0.12 * ((Math.abs(sx)<DEADZONE?0:sx) - tiltX); // ローパス
+},{passive:true});
 
-  const ang = screenAngle();                 // 0/90/180/270
-  const { screenX } = toScreenAxes(ax, ay, ang);
+/* ===== iOS許可 ===== */
+async function askPerm(){
+  try{
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function'){
+      await DeviceMotionEvent.requestPermission();
+    }
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      await DeviceOrientationEvent.requestPermission();
+    }
+  }catch(e){ console.warn(e); }
+  permBtn.classList.add('hidden');
+}
+const needMotionPerm = window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission==='function';
+const needOrientPerm = window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission==='function';
+if (needMotionPerm || needOrientPerm) permBtn.classList.remove('hidden');
+permBtn.addEventListener('click', askPerm, {once:true});
+document.addEventListener('touchstart', askPerm, {once:true, passive:true});
+document.addEventListener('click', askPerm, {once:true});
 
-  // 画面Xのローパス＋ゼロ点補正＋反転＋デッドゾーン
-  let v = invert * (screenX - zeroOffset);
-  if (Math.abs(v) < DEADZONE) v = 0;
-  filtSX += ALPHA * (v - filtSX);
-}, { passive:true });
-
-/* デスクトップ代用 */
-if (!('ontouchstart' in window)) {
+/* ===== PCフォールバック：マウスXで tiltX を作る ===== */
+if (!('ontouchstart' in window)){
   window.addEventListener('mousemove', (e)=>{
     const nx = (e.clientX / innerWidth) * 2 - 1;
-    filtSX += ALPHA * ((nx*0.6) - filtSX);
+    tiltX += 0.2 * (nx - tiltX);
   });
 }
 
-/* ===== 減衰付き振り子 ===== */
-let angle=0, vel=0, lastT=performance.now();
-function tick(now){
-  const dt = Math.min(0.032, (now-lastT)/1000); lastT = now;
+/* ===== 直接ドラッグで揺らす（iPad等の保険） ===== */
+let dragging=false, lastX=0, lastY=0;
+function pointerPos(evt){ const t=evt.touches?evt.touches[0]:evt; 
+  const r = svg.getBoundingClientRect(); return {x: (evt.clientX??t.clientX)-r.left, y:(evt.clientY??t.clientY)-r.top}; }
+svg.addEventListener('pointerdown', e=>{ dragging=true; const p=pointerPos(e); lastX=p.x; lastY=p.y; });
+svg.addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  const p=pointerPos(e);
+  // 下端質点にインパルス（速度相当=位置の差）を与える
+  const i=N-1; pts[i].px -= (p.x-lastX)*0.5; pts[i].py -= (p.y-lastY)*0.5;
+  lastX=p.x; lastY=p.y;
+});
+window.addEventListener('pointerup', ()=>dragging=false);
 
-  const input = filtSX * GAIN;                 // 画面左右のみ反映
-  const acc   = input - DAMP*vel - STIFF*angle;
-  vel += acc * dt;
-  angle += vel * dt;
+/* ===== 物理ステップ（Verlet） ===== */
+let lastT = performance.now();
+function step(now){
+  const dt = Math.min(0.033, (now-lastT)/1000); lastT=now;
+  const dt2 = dt*dt;
 
-  const maxR = MAX_DEG*Math.PI/180;
-  if (angle >  maxR){ angle =  maxR; vel *= 0.5; }
-  if (angle < -maxR){ angle = -maxR; vel *= 0.5; }
+  // 1) 力：下向き重力 + 横力（傾き）
+  const ax = tiltX * GAIN_X;  // px/s^2
+  const ay = GRAVITY_Y;
 
-  pendulum.style.transform = `rotate(${angle*180/Math.PI}deg)`;
+  for(let i=1;i<N;i++){ // 先頭は固定なので除外
+    const p = pts[i];
+    const vx = (p.x - p.px)*(1 - AIR_DAMP);
+    const vy = (p.y - p.py)*(1 - AIR_DAMP);
+    p.px = p.x; p.py = p.y;
+    p.x += vx + ax*dt2;
+    p.y += vy + ay*dt2;
+  }
 
-  // デバッグ表示
-  sa.textContent = screenAngle();
-  gx.textContent = lastAX.toFixed(3);
-  gy.textContent = lastAY.toFixed(3);
-  sx.textContent = filtSX.toFixed(3);
-  an.textContent = (angle*180/Math.PI).toFixed(1);
+  // 2) 制約：アンカー固定
+  pts[0].x = anchor.x; pts[0].y = anchor.y;
 
-  requestAnimationFrame(tick);
+  // 3) 距離制約（反復）
+  for(let k=0;k<ITER;k++){
+    // 先頭固定
+    pts[0].x = anchor.x; pts[0].y = anchor.y;
+
+    for(let i=0;i<N-1;i++){
+      const p1 = pts[i], p2 = pts[i+1];
+      let dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const dist = Math.hypot(dx,dy) || 1;
+      const diff = (dist - SEG_LEN) / dist;
+      // 端点ごとに半分ずつ修正（先頭は固定で動かさない）
+      const correctionX = dx*diff*0.5, correctionY = dy*diff*0.5;
+      if(i>0){ p1.x += correctionX; p1.y += correctionY; }
+      p2.x -= correctionX; p2.y -= correctionY;
+    }
+  }
+
+  // 4) 描画（滑らかなパス）
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for(let i=1;i<N;i++){
+    d += ` L ${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)}`;
+  }
+  rope.setAttribute('d', d);
+  bob.setAttribute('cx', pts[N-1].x);
+  bob.setAttribute('cy', pts[N-1].y);
+
+  requestAnimationFrame(step);
 }
-requestAnimationFrame(tick);
+requestAnimationFrame(step);
 
-/* 画面向きが変わったら、少し待ってからゼロ再取得すると安定 */
-window.addEventListener('orientationchange', ()=> setTimeout(()=>{ zeroOffset = filtSX; }, 80));
-if (screen.orientation) screen.orientation.addEventListener('change', ()=> setTimeout(()=>{ zeroOffset = filtSX; }, 80));
+/* ===== ちょい微調整したい人向け：数値ここ変えると効きます =====
+   - もっと“プラプラ”→ ITERを少し下げる(6) or AIR_DAMPを下げる(0.005)
+   - コシ強く→ ITER上げ(10〜12) / SEG_LENを短く / AIR_DAMP少し上げ
+   - 反応を強める→ GAIN_X を 1200, 1500… と増やす
+   - 小刻みなブレ→ DEADZONE を 0.03〜0.05 に
+*/
 </script>
 </body>
 </html>
