@@ -59,12 +59,12 @@
 
 <script>
 /* ========= 調整パラメータ ========= */
-const DEADZONE_G    = 0.05;  // 微振動カット（0.03〜0.08くらいで調整）
+const DEADZONE_G    = 0.02;  // 微振動カット（0.03〜0.08くらいで調整）
 const ALPHA         = 0.12;  // ローパス係数（小さいほど滑らか）
 const STIFFNESS     = 18.0;  // 復元力（小→ゆったり／大→キビキビ）
 const DAMPING       = 3.2;   // 減衰（大きいほど早く止まる）
 const MAX_ANGLE_DEG = 22;    // 最大振れ角（見た目の上限）
-const DRIVE_GAIN    = 0.9;   // 入力→トルク増幅
+const DRIVE_GAIN    = 2.9;   // 入力→トルク増幅
 
 const pendulum = document.getElementById('pendulum');
 const permBtn  = document.getElementById('perm');
