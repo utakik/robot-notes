@@ -17,10 +17,7 @@
   .toolbar{ position:fixed; top:10px; right:10px; display:flex; gap:.5rem; z-index:5; }
   .toolbar button{ padding:.5rem .75rem; border:1px solid #bbb; background:#fff; border-radius:.5rem; cursor:pointer; font-size:14px; }
   .toolbar button:active{ transform: translateY(1px); }
-  /* 左右反転時の見た目（テキストは反転打ち消しで可読維持） */
-  body.mirror svg{ transform: scaleX(-1); }
-  body.mirror text{ transform: scaleX(-1); transform-box: fill-box; transform-origin: center; }
-</style>
+ 
 </head>
 <body><div class="toolbar">
   <button id="toggle-mirror" title="左右反転">左右反転</button>
@@ -102,6 +99,8 @@ class Rope{
  *********************************/
 let tilt = { x: 0, y: 1 }; // 画面座標系：右(+x)・下(+y)方向の“重力”成分
 
+let MIRROR_X =　false; // 入力の左右だけ反転するフラグ
+
 function screenAngle(){
   if(screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
   return 0;
@@ -178,28 +177,26 @@ ropeSys.attach(
 let sys = { x: 0, y: 0 };
 const SYS_ALPHA = 0.08; // 小さいほど遅延・平滑化が強い
 
-let lastT = performance.now();
+et lastT = performance.now();
 function loop(t){
   const dt = Math.min(0.032, (t - lastT) / 1000); // 安定のため最大32ms
   lastT = t;
-
-  // 端末傾き→画面座標の“擬似重力”を px単位の加速度にスケール
-  // 左右反転時は X 成分を反転させて、見た目と操作の整合を取る
-  const sign = MIRROR ? -1 : 1;
-  const ax = (tilt.x * sign) * 120;   // 入力スケール
+ 
+  // 入力スケール（Xのみ左右反転を反映）
+  const ax = (tilt.x * (MIRROR_X ? -1 : 1)) * 120;
   const ay = (tilt.y + 1.0) * 120;
-
-  // ショートサーキット型：入力=出力=同一（黒）
+ 
+  // ショートサーキット型（黒）
   ropeShort.step(ax, ay, dt);
-
-  // 分離型：ユーザー入力（青）は生値を使用
+ 
+  // 分離・ユーザー（青）
   ropeUser.step(ax, ay, dt);
-
-  // 分離型：システム出力（赤）はローパス処理（遅延・平滑化）
+ 
+  // 分離・システム（赤：ローパス）
   sys.x += (ax - sys.x) * SYS_ALPHA;
   sys.y += (ay - sys.y) * SYS_ALPHA;
   ropeSys.step(sys.x, sys.y, dt);
-
+ 
   requestAnimationFrame(loop);
 }
 
