@@ -3,329 +3,248 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ショートサーキット vs 分離（ひも3本・入力左右反転）</title>
+<title>ショートサーキット vs 分離（微分強調・3本同アンカー）</title>
 <style>
-
   :root{ --ui:#111; --blue:#06c; --red:#c30; }
-
   body { margin:0; background:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-
-  svg { width:100%; height:100vh; display:block; }
-
+  svg { width:100%; height:100vh; display:block; touch-action:none; }
   text { font-size:14px; fill:#333; }
-
   .legend { fill:#555; font-size:12px; }
 
   /* モーション許可ボタン */
-
   #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem;
-
           background:#fff; border:1px solid #888; border-radius:.5rem; box-shadow:0 4px 12px rgba(0,0,0,.2); }
-
   #perm.hidden{ display:none; }
 
   /* ツールバー */
-
   .toolbar{ position:fixed; top:10px; right:10px; display:flex; gap:.5rem; z-index:5; }
-
   .toolbar button{ padding:.5rem .75rem; border:1px solid #bbb; background:#fff; border-radius:.5rem; cursor:pointer; font-size:14px; }
-
   .toolbar button:active{ transform: translateY(1px); }
 </style>
 </head>
 <body>
+
 <div class="toolbar">
-<button id="toggle-mirror" title="入力の左右を反転">左右反転（入力）</button>
+  <button id="toggle-mirror" title="入力の左右を反転">左右反転（入力）</button>
 </div>
+
 <svg id="stage" viewBox="0 0 600 400" aria-label="ショートサーキット vs 分離 実験">
-<!-- ショート型（左：黒） -->
-<path id="rope-short" d="" stroke="#111" stroke-width="3" fill="none"/>
-<circle id="bob-short" r="8" fill="#111"/>
-<text x="100" y="30">ショートサーキット型</text>
-<!-- 分離型（右：青=ユーザー入力） -->
-<path id="rope-user" d="" stroke="#06c" stroke-width="3" fill="none"/>
-<circle id="bob-user" r="8" fill="#06c"/>
-<text x="400" y="30">分離型（青=ユーザー）</text>
-<!-- 分離型（右：赤=システム出力） -->
-<path id="rope-sys" d="" stroke="#c30" stroke-width="3" fill="none"/>
-<circle id="bob-sys" r="8" fill="#c30"/>
-<text x="400" y="210" class="legend">赤=システム出力（低周波化・遅延）</text>
+  <!-- ショート型（黒） -->
+  <path id="rope-short" d="" stroke="#111" stroke-width="3" fill="none"/>
+  <circle id="bob-short" r="8" fill="#111"/>
+  <text x="300" y="26" text-anchor="middle">ショートサーキット型（黒=微分強調）</text>
+
+  <!-- 分離型（青=ユーザー入力） -->
+  <path id="rope-user" d="" stroke="#06c" stroke-width="3" fill="none"/>
+  <circle id="bob-user" r="8" fill="#06c"/>
+  <text x="420" y="30">分離型（青=ユーザー）</text>
+
+  <!-- 分離型（赤=システム出力=ローパス） -->
+  <path id="rope-sys" d="" stroke="#c30" stroke-width="3" fill="none"/>
+  <circle id="bob-sys" r="8" fill="#c30"/>
+  <text x="420" y="210" class="legend">赤=システム出力（低周波化・遅延）</text>
 </svg>
+
 <button id="perm" class="hidden">センサーを有効にする</button>
+
 <script>
-
 /*********************************
-
  * ひも物理（Verlet + 距離拘束）
-
  *********************************/
-
 class Rope{
-
-  constructor(anchorX, anchorY){
-
-    this.N = 12;       // ノード数
-
-    this.SEG = 15;     // セグメント長（px）
-
-    this.ITER = 6;     // 拘束反復回数
-
+  constructor(anchorX, anchorY, displayOffsetX = 0, displayOffsetY = 0){
+    this.N = 20;    // 長さ（ノード数）
+    this.SEG = 15;  // 長さ（セグメント長）
+    this.ITER = 6;
     this.anchor = { x: anchorX, y: anchorY };
-
+    this.off = { x: displayOffsetX, y: displayOffsetY }; // 表示のみオフセット
     this.pts = Array.from({length: this.N}, (_, i) => ({
-
       x: anchorX, y: anchorY + i * this.SEG,
-
       px: anchorX, py: anchorY + i * this.SEG
-
     }));
-
     this.path = null; this.bob = null;
-
   }
-
   attach(pathEl, bobEl){ this.path = pathEl; this.bob = bobEl; }
-
   step(ax, ay, dt){
-
     const pts = this.pts, N = this.N;
-
     // 位置更新（Verlet）
-
     for(let i=1; i<N; i++){
-
       const p = pts[i];
-
       const vx = (p.x - p.px) * 0.99;  // 減衰
-
       const vy = (p.y - p.py) * 0.99;
-
       p.px = p.x; p.py = p.y;
-
       p.x += vx + ax * dt * dt;
-
       p.y += vy + ay * dt * dt;
-
     }
-
     // アンカー固定
-
     pts[0].x = this.anchor.x; pts[0].y = this.anchor.y;
-
     // 距離拘束
-
     for(let k=0; k<this.ITER; k++){
-
       pts[0].x = this.anchor.x; pts[0].y = this.anchor.y;
-
       for(let i=0; i<N-1; i++){
-
         const p1 = pts[i], p2 = pts[i+1];
-
         let dx = p2.x - p1.x, dy = p2.y - p1.y;
-
         const dist = Math.hypot(dx, dy) || 1;
-
         const diff = (dist - this.SEG) / dist;
-
         const cx = dx * diff * 0.5, cy = dy * diff * 0.5;
-
         if(i>0){ p1.x += cx; p1.y += cy; }
-
         p2.x -= cx; p2.y -= cy;
-
       }
-
     }
-
-    // SVG 更新
-
-    let d = `M${pts[0].x} ${pts[0].y}`;
-
-    for(let i=1; i<N; i++){ d += `L${pts[i].x} ${pts[i].y}`; }
-
+    // SVG 更新（表示用オフセット適用）
+    const ox = this.off.x, oy = this.off.y;
+    let d = `M${pts[0].x + ox} ${pts[0].y + oy}`;
+    for(let i=1; i<N; i++){ d += `L${pts[i].x + ox} ${pts[i].y + oy}`; }
     this.path.setAttribute('d', d);
-
-    this.bob.setAttribute('cx', pts[N-1].x);
-
-    this.bob.setAttribute('cy', pts[N-1].y);
-
+    this.bob.setAttribute('cx', pts[N-1].x + ox);
+    this.bob.setAttribute('cy', pts[N-1].y + oy);
   }
-
 }
 
 /*********************************
-
- * デバイス傾き入力
-
+ * 入力（センサー / マウス / タッチ）
  *********************************/
-
-let tilt = { x: 0, y: 1 };  // 画面座標系：右(+x)・下(+y)
-
-let MIRROR_X = false;       // 入力の左右だけ反転
+let tilt = { x: 0, y: 1 };   // 画面座標系：右(+x)・下(+y)
+let MIRROR_X = false;        // 入力Xだけ反転
+let pointerActive = false;   // ドラッグ中はポインタ優先
 
 function screenAngle(){
-
   if(screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
-
   return 0;
-
 }
-
 function toScreenAxes(ax, ay, ang){
-
   const t = ang * Math.PI/180, c = Math.cos(t), s = Math.sin(t);
-
   return { sx: ax*c + ay*s, sy: -ax*s + ay*c };
-
 }
 
 function enableMotionIfNeeded(){
-
   const btn = document.getElementById('perm');
-
   const needsPerm = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
-
   if(needsPerm){
-
     btn.classList.remove('hidden');
-
     btn.onclick = async () => {
-
       try{
-
         const st = await DeviceMotionEvent.requestPermission();
-
         if(st === 'granted'){
-
           window.addEventListener('devicemotion', onMotion, { passive:true });
-
           btn.classList.add('hidden');
-
         }
-
       }catch(e){ console.warn(e); }
-
     };
-
   }else{
-
     window.addEventListener('devicemotion', onMotion, { passive:true });
-
   }
-
 }
-
 function onMotion(e){
-
+  if(pointerActive) return; // ドラッグ中は無視
   const g = e.accelerationIncludingGravity; if(!g) return;
-
   const ax = (g.x ?? 0) / 9.8;  // 1g → 1.0
-
   const ay = (g.y ?? 0) / 9.8;
-
   const ang = screenAngle();
-
   const { sx, sy } = toScreenAxes(ax, ay, ang);
-
   tilt.x = sx; tilt.y = sy;
-
 }
 
-// キーボード代替（PC検証用）
-
-(function setupKeyboard(){
-
-  let vx=0, vy=0;
-
-  window.addEventListener('keydown', (e)=>{
-
-    if(e.key==='ArrowLeft') vx=-0.6; if(e.key==='ArrowRight') vx=0.6;
-
-    if(e.key==='ArrowUp') vy=-0.6; if(e.key==='ArrowDown') vy=0.6;
-
-    if(e.key===' ') { vx=0; vy=0; }
-
-    tilt.x = vx; tilt.y = vy || 1;
-
-  });
-
-})();
+/* ==== マウス/タッチ -> tilt 変換 ==== */
+const svg = document.getElementById('stage');
+const pt = svg.createSVGPoint();
+function setTiltFromPointer(clientX, clientY){
+  pt.x = clientX; pt.y = clientY;
+  const inv = svg.getScreenCTM().inverse();
+  const sp = pt.matrixTransform(inv); // viewBox座標 (0..600, 0..400)
+  const cx = 300, cy = 200;
+  let dx = (sp.x - cx) / cx;
+  let dy = (sp.y - cy) / cy;
+  tilt.x = Math.max(-1, Math.min(1, dx));
+  tilt.y = Math.max(-1, Math.min(1, dy));
+}
+svg.addEventListener('pointerdown', (e)=>{
+  pointerActive = true;
+  svg.setPointerCapture(e.pointerId);
+  setTiltFromPointer(e.clientX, e.clientY);
+});
+svg.addEventListener('pointermove', (e)=>{
+  if(!pointerActive) return;
+  setTiltFromPointer(e.clientX, e.clientY);
+});
+function endPointer(e){
+  if(pointerActive){
+    pointerActive = false;
+    try{ svg.releasePointerCapture(e.pointerId); }catch(_){}
+    tilt.x = 0; tilt.y = 1; // リセット
+  }
+}
+svg.addEventListener('pointerup', endPointer);
+svg.addEventListener('pointercancel', endPointer);
+svg.addEventListener('pointerleave', endPointer);
 
 /*********************************
-
- * セットアップ & ループ
-
+ * セットアップ（同一点アンカー & 表示オフセット）
  *********************************/
-
-const ropeShort = new Rope(300, 40);   // 左上アンカー
-
-const ropeUser  = new Rope(300, 40);   // 右上アンカー
-
-const ropeSys   = new Rope(300, 40);  // 右下アンカー
+const AX = 300, AY = 40;   // 3本とも同じ位置から吊るす
+const ropeShort = new Rope(AX, AY, -10, 0); // 黒（表示だけ少し左）
+const ropeUser  = new Rope(AX, AY,   0, 0); // 青（中央）
+const ropeSys   = new Rope(AX, AY, +10, 0); // 赤（表示だけ少し右）
 
 ropeShort.attach(document.getElementById('rope-short'), document.getElementById('bob-short'));
-
 ropeUser.attach(document.getElementById('rope-user'),   document.getElementById('bob-user'));
-
 ropeSys.attach(document.getElementById('rope-sys'),     document.getElementById('bob-sys'));
 
-let sys = { x: 0, y: 0 };        // システム出力のローパス状態
-
-const SYS_ALPHA = 0.08;          // 小さいほど遅く滑らか
-
+/*********************************
+ * ループ（黒に“微分”を加える）
+ *********************************/
+let sys = { x: 0, y: 0 };        // 赤のローパス状態
+const SYS_ALPHA = 0.08;          // 赤のなめらかさ（小さいほど遅い）
 let lastT = performance.now();
 
+// “反転適用後”の入力を保存して微分（d/dt）を取る
+let prevEff = { x: 0, y: 1 };
+
+const K_D = 25; // 微分ゲイン：15〜40で調整（大きいほどチリつく）
+
 function loop(t){
-
-  const dt = Math.min(0.032, (t - lastT) / 1000); // 安定のため最大32ms
-
+  const dt = Math.min(0.032, (t - lastT) / 1000) || 0.016; // 安定のため最大32ms
   lastT = t;
 
-  // 入力スケール（Xのみ左右反転対応）
+  // 入力（反転適用後の“有効入力”）
+  const effX = tilt.x * (MIRROR_X ? -1 : 1);
+  const effY = tilt.y;
 
-  const ax = (tilt.x * (MIRROR_X ? -1 : 1)) * 120;
+  // 有効入力の微分（変化/秒）
+  const dx = (effX - prevEff.x) / dt;
+  const dy = (effY - prevEff.y) / dt;
+  prevEff.x = effX; prevEff.y = effY;
 
-  const ay = (tilt.y + 1.0) * 120;
+  // px単位の加速度へスケール
+  const ax = effX * 120;
+  const ay = (effY + 1.0) * 120;
 
-  // 黒：ショートサーキット（入力=出力）
-
-  ropeShort.step(ax, ay, dt);
+  // 黒：ショートサーキット（微分成分を加える＝高周波を強調）
+  const ax_short = ax + K_D * dx;
+  const ay_short = ay + K_D * dy;
+  ropeShort.step(ax_short, ay_short, dt);
 
   // 青：分離（ユーザー入力＝生値）
-
   ropeUser.step(ax, ay, dt);
 
   // 赤：分離（システム出力＝ローパス）
-
   sys.x += (ax - sys.x) * SYS_ALPHA;
-
   sys.y += (ay - sys.y) * SYS_ALPHA;
-
   ropeSys.step(sys.x, sys.y, dt);
 
   requestAnimationFrame(loop);
-
 }
 
 // 起動
-
 enableMotionIfNeeded();
-
 requestAnimationFrame(loop);
 
 // 入力左右反転ボタン
-
 const btnMirror = document.getElementById('toggle-mirror');
-
 btnMirror.addEventListener('click', ()=>{
-
   MIRROR_X = !MIRROR_X;
-
   btnMirror.textContent = MIRROR_X ? '左右反転（入力：ON）' : '左右反転（入力）';
-
 });
 </script>
 </body>
 </html>
- 
