@@ -2,18 +2,29 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ショートサーキット vs 分離（ひも3本・注釈つき）</title>
+<title>ショートサーキット vs 分離（ひも3本・左右反転つき）</title>
 <style>
+  :root{ --ui: #111; --blue:#06c; --red:#c30; }
   body { margin:0; background:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  svg { width:100%; height:100vh; display:block; }
+  svg { width:100%; height:100vh; display:block; transition: transform .25s ease; }
   text { font-size:14px; fill:#333; }
+  .legend { fill:#555; font-size:12px; }
+  /* iOS 等のモーション許可ボタン（ダイアログ） */
   #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem;
           background:#fff; border:1px solid #888; border-radius:.5rem; box-shadow:0 4px 12px rgba(0,0,0,.2); }
   #perm.hidden{ display:none; }
-  .legend { fill:#555; font-size:12px; }
+  /* ツールバー */
+  .toolbar{ position:fixed; top:10px; right:10px; display:flex; gap:.5rem; z-index:5; }
+  .toolbar button{ padding:.5rem .75rem; border:1px solid #bbb; background:#fff; border-radius:.5rem; cursor:pointer; font-size:14px; }
+  .toolbar button:active{ transform: translateY(1px); }
+  /* 左右反転時の見た目（テキストは反転打ち消しで可読維持） */
+  body.mirror svg{ transform: scaleX(-1); }
+  body.mirror text{ transform: scaleX(-1); transform-box: fill-box; transform-origin: center; }
 </style>
 </head>
-<body><!-- =============================
+<body><div class="toolbar">
+  <button id="toggle-mirror" title="左右反転">左右反転</button>
+</div><!-- =============================
      可視レイヤ（SVG）
      - 左: ショートサーキット型（黒）
      - 右上: 分離型 ユーザー入力（青）
@@ -90,6 +101,7 @@ class Rope{
  * デバイス傾き入力
  *********************************/
 let tilt = { x: 0, y: 1 }; // 画面座標系：右(+x)・下(+y)方向の“重力”成分
+let MIRROR = false;        // 左右反転フラグ（trueでX成分の符号を反転）
 
 function screenAngle(){
   if(screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
@@ -145,7 +157,6 @@ function onMotion(e){
 /*********************************
  * セットアップ & ループ
  *********************************/
-const svg = document.getElementById('stage');
 const ropeShort = new Rope(100, 60);   // 左上アンカー
 const ropeUser  = new Rope(450, 60);   // 右上アンカー
 const ropeSys   = new Rope(450, 240);  // 右下アンカー
@@ -174,8 +185,9 @@ function loop(t){
   lastT = t;
 
   // 端末傾き→画面座標の“擬似重力”を px単位の加速度にスケール
-  // 係数は見た目調整。y方向は常時+1g程度を足して下向きにする。
-  const ax = tilt.x * 120;              // 入力スケール
+  // 左右反転時は X 成分を反転させて、見た目と操作の整合を取る
+  const sign = MIRROR ? -1 : 1;
+  const ax = (tilt.x * sign) * 120;   // 入力スケール
   const ay = (tilt.y + 1.0) * 120;
 
   // ショートサーキット型：入力=出力=同一（黒）
@@ -195,5 +207,12 @@ function loop(t){
 // 起動
 enableMotionIfNeeded();
 requestAnimationFrame(loop);
+
+// 左右反転ボタン
+const btnMirror = document.getElementById('toggle-mirror');
+btnMirror.addEventListener('click', ()=>{
+  MIRROR = !MIRROR;
+  document.body.classList.toggle('mirror', MIRROR);
+});
 </script></body>
 </html>
