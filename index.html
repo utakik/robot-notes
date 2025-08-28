@@ -1,193 +1,199 @@
-<!DOCTYPE html>
-<html lang="ja">
+<!DOCTYPE html><html lang="ja">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>String Swing – Jointed Rope</title>
+<title>ショートサーキット vs 分離（ひも3本・注釈つき）</title>
 <style>
-  html, body { height: 100%; margin: 0; background:#fff; }
-  body { display:grid; place-items:center; font-family:system-ui, sans-serif; user-select:none; touch-action:manipulation; }
-
-  /* 画面中央にSVGキャンバス */
-  #stage { width:min(90vw,520px); height:min(70vh,520px); display:block; }
-
-  /* 許可ボタン */
-  #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem 1.2rem;
-          border:1px solid #888; border-radius:.6rem; background:#fff; font-size:16px; cursor:pointer;
-          box-shadow:0 4px 16px rgba(0,0,0,.15); }
-  #perm.hidden { display:none; }
-
-  /* 簡易UI */
-  #hud{ position:fixed; top:.6rem; left:50%; transform:translateX(-50%); font-size:12px; opacity:.65; }
+  body { margin:0; background:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  svg { width:100%; height:100vh; display:block; }
+  text { font-size:14px; fill:#333; }
+  #perm { position:fixed; inset:0; margin:auto; width:max(220px,40vw); padding:1rem;
+          background:#fff; border:1px solid #888; border-radius:.5rem; box-shadow:0 4px 12px rgba(0,0,0,.2); }
+  #perm.hidden{ display:none; }
+  .legend { fill:#555; font-size:12px; }
 </style>
 </head>
-<body>
-  <svg id="stage" viewBox="0 0 400 400" aria-label="jointed rope">
-    <!-- アンカー位置（見えない）: (200, 40) -->
-    <path id="rope" d="" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" />
-    <circle id="bob" cx="200" cy="200" r="4" fill="#111"/>
-  </svg>
-
-  <button id="perm" class="hidden">センサーを有効にする</button>
-  <div id="hud">
-  スマホは傾けて、PCはマウス移動/ドラッグで揺らせます。<br>
-  <label><input type="checkbox" id="inv"> 反転（左右逆に感じたらON）</label>
-</div>
+<body><!-- =============================
+     可視レイヤ（SVG）
+     - 左: ショートサーキット型（黒）
+     - 右上: 分離型 ユーザー入力（青）
+     - 右下: 分離型 システム出力（赤）
+     ※ 3本とも同じ物理エンジン(Rope)を共有
+   ============================= --><svg id="stage" viewBox="0 0 600 400" aria-label="ショートサーキット vs 分離 実験">
+  <!-- ショート型（左：黒） -->
+  <!-- ▼ この2要素が1本のひもとおもり（bob） -->
+  <path id="rope-short" d="" stroke="#111" stroke-width="3" fill="none"/>
+  <circle id="bob-short" r="8" fill="#111"/>
+  <text x="100" y="30">ショートサーキット型</text>  <!-- 分離型（右：青=ユーザー入力） -->  <!-- ▼ ユーザー傾き入力を直接駆動 -->  <path id="rope-user" d="" stroke="#06c" stroke-width="3" fill="none"/>
+  <circle id="bob-user" r="8" fill="#06c"/>
+  <text x="400" y="30">分離型（青=ユーザー）</text>  <!-- 分離型（右：赤=システム出力） -->  <!-- ▼ ユーザー入力をローパス処理した“出力”を駆動（処理遅延のモデル） -->  <path id="rope-sys" d="" stroke="#c30" stroke-width="3" fill="none"/>
+  <circle id="bob-sys" r="8" fill="#c30"/>
+  <text x="400" y="210" class="legend">赤=システム出力（低周波化・遅延）</text>
+</svg><!-- iOS 等でのデバイスモーション許可用ボタン --><button id="perm" class="hidden">センサーを有効にする</button>
 
 <script>
-/* ===== パラメータ（お好みで） ===== */
-const NUM_SEG   = 16;     // 関節数（多いほど柔らかい）
-const SEG_LEN   = 10;     // 各節の長さ（px）
-const ITER      = 6;      // 制約反復（多いほどコシ強め）
-const AIR_DAMP  = 0.005;   // 空気抵抗（0〜0.03）
-const GRAVITY_Y = 600;    // 下向き重力 [px/s^2]
-let   GAIN_X    = 1200;    // 横方向の力スケール（傾き→力）
-let   DEADZONE  = 0.02;   // 小さな傾き無視
-let invert = 1;
-const invBox = document.getElementById('inv');
-invBox.addEventListener('change', (e)=>{
-invert = e.target.checked ? -1 : 1;
-});
+/*********************************
+ * ひも物理（Verlet + 距離拘束）
+ *********************************/
+class Rope{
+  constructor(anchorX, anchorY){
+    this.N = 12;       // ノード数
+    this.SEG = 10;     // セグメント長（px）
+    this.ITER = 6;     // 拘束反復回数
+    this.anchor = { x: anchorX, y: anchorY };
+    this.pts = Array.from({length: this.N}, (_, i) => ({
+      x: anchorX,
+      y: anchorY + i * this.SEG,
+      px: anchorX,
+      py: anchorY + i * this.SEG
+    }));
+    this.path = null; this.bob = null;
+  }
+  attach(pathEl, bobEl){ this.path = pathEl; this.bob = bobEl; }
+  step(ax, ay, dt){
+    const pts = this.pts, N = this.N;
+    // 位置更新（Verlet）
+    for(let i=1; i<N; i++){
+      const p = pts[i];
+      const vx = (p.x - p.px) * 0.99;            // 減衰（空気抵抗）
+      const vy = (p.y - p.py) * 0.99;
+      p.px = p.x; p.py = p.y;
+      p.x += vx + ax * dt * dt;                  // 加速度は px/frame^2 換算
+      p.y += vy + ay * dt * dt;
+    }
+    // アンカー固定
+    pts[0].x = this.anchor.x; pts[0].y = this.anchor.y;
 
-/* ===== 参照 ===== */
-const svg  = document.getElementById('stage');
-const rope = document.getElementById('rope');
-const bob  = document.getElementById('bob');
-const permBtn = document.getElementById('perm');
-
-/* ===== ロープ状態（Verlet） ===== */
-const N = NUM_SEG + 1; // 点の数
-const pts = new Array(N).fill().map(_=>({x:0,y:0,px:0,py:0}));
-const anchor = { x:200, y:40 }; // 固定点（SVG座標）
-
-function resetRope(){
-  for(let i=0;i<N;i++){
-    const x = anchor.x;
-    const y = anchor.y + i*SEG_LEN;
-    pts[i].x=x; pts[i].y=y; pts[i].px=x; pts[i].py=y;
+    // 距離拘束（ロープ長保持）
+    for(let k=0; k<this.ITER; k++){
+      pts[0].x = this.anchor.x; pts[0].y = this.anchor.y; // 毎回原点復帰
+      for(let i=0; i<N-1; i++){
+        const p1 = pts[i], p2 = pts[i+1];
+        let dx = p2.x - p1.x, dy = p2.y - p1.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const diff = (dist - this.SEG) / dist;
+        const cx = dx * diff * 0.5, cy = dy * diff * 0.5;
+        if(i > 0){ p1.x += cx; p1.y += cy; }     // アンカー以外を調整
+        p2.x -= cx; p2.y -= cy;
+      }
+    }
+    // SVG 更新
+    let d = `M${pts[0].x} ${pts[0].y}`;
+    for(let i=1; i<N; i++){ d += `L${pts[i].x} ${pts[i].y}`; }
+    this.path.setAttribute('d', d);
+    this.bob.setAttribute('cx', pts[N-1].x);
+    this.bob.setAttribute('cy', pts[N-1].y);
   }
 }
-resetRope();
 
-/* ===== 画面向き（0/90/180/270） ===== */
+/*********************************
+ * デバイス傾き入力
+ *********************************/
+let tilt = { x: 0, y: 1 }; // 画面座標系：右(+x)・下(+y)方向の“重力”成分
+
 function screenAngle(){
-  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
-  if (typeof window.orientation === 'number') return ((window.orientation%360)+360)%360;
+  if(screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
   return 0;
 }
-
-/* ===== センサー入力：左右傾きだけ取り出す（弱い環境は0に近い） ===== */
-let tiltX = 0; // -1..1 相当（画面の左右）
-function toScreenAxes(ax, ay, angDeg){
-  const t = angDeg * Math.PI/180, c = Math.cos(t), s = Math.sin(t);
+function toScreenAxes(ax, ay, ang){
+  const t = ang * Math.PI/180, c = Math.cos(t), s = Math.sin(t);
   return { sx: ax*c + ay*s, sy: -ax*s + ay*c };
 }
-window.addEventListener('devicemotion', (e)=>{
+
+function enableMotionIfNeeded(){
+  const btn = document.getElementById('perm');
+  const needsPerm = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
+  if(needsPerm){
+    btn.classList.remove('hidden');
+    btn.onclick = async () => {
+      try{
+        const st = await DeviceMotionEvent.requestPermission();
+        if(st === 'granted'){
+          window.addEventListener('devicemotion', onMotion, { passive:true });
+          btn.classList.add('hidden');
+        }
+      }catch(e){ console.warn(e); }
+    };
+  }else{
+    // 権限不要な環境
+    window.addEventListener('devicemotion', onMotion, { passive:true });
+  }
+}
+
+function onMotion(e){
   const g = e.accelerationIncludingGravity; if(!g) return;
-  const ax = (g.x??0)/9.80665, ay=(g.y??0)/9.80665;
-  const { sx } = toScreenAxes(ax, ay, screenAngle());
-  tiltX += 0.12 * ((Math.abs(sx)<DEADZONE?0:sx) - tiltX); // ローパス
-},{passive:true});
-
-/* ===== iOS許可 ===== */
-async function askPerm(){
-  try{
-    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function'){
-      await DeviceMotionEvent.requestPermission();
-    }
-    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function'){
-      await DeviceOrientationEvent.requestPermission();
-    }
-  }catch(e){ console.warn(e); }
-  permBtn.classList.add('hidden');
+  // 物理g(≈9.8)で正規化して "1g" を 1.0 とする
+  const ax = (g.x ?? 0) / 9.8;
+  const ay = (g.y ?? 0) / 9.8;
+  const ang = screenAngle();
+  const { sx, sy } = toScreenAxes(ax, ay, ang);
+  // 端末の傾きが右下に重力ベクトルを持つと (+x, +y)
+  tilt.x = sx; tilt.y = sy;
 }
-const needMotionPerm = window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission==='function';
-const needOrientPerm = window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission==='function';
-if (needMotionPerm || needOrientPerm) permBtn.classList.remove('hidden');
-permBtn.addEventListener('click', askPerm, {once:true});
-document.addEventListener('touchstart', askPerm, {once:true, passive:true});
-document.addEventListener('click', askPerm, {once:true});
 
-/* ===== PCフォールバック：マウスXで tiltX を作る ===== */
-if (!('ontouchstart' in window)){
-  window.addEventListener('mousemove', (e)=>{
-    const nx = (e.clientX / innerWidth) * 2 - 1;
-    tiltX += 0.2 * (nx - tiltX);
+// キーボード代替（PC検証用）: 矢印で傾き、スペースでリセット
+(function setupKeyboard(){
+  let vx=0, vy=0;
+  window.addEventListener('keydown', (e)=>{
+    if(e.key==='ArrowLeft') vx=-0.6; if(e.key==='ArrowRight') vx=0.6;
+    if(e.key==='ArrowUp') vy=-0.6; if(e.key==='ArrowDown') vy=0.6;
+    if(e.key===' ') { vx=0; vy=0; }
+    tilt.x = vx; tilt.y = vy || 1; // デフォルトでやや下向き
   });
-}
+})();
 
-/* ===== 直接ドラッグで揺らす（iPad等の保険） ===== */
-let dragging=false, lastX=0, lastY=0;
-function pointerPos(evt){ const t=evt.touches?evt.touches[0]:evt; 
-  const r = svg.getBoundingClientRect(); return {x: (evt.clientX??t.clientX)-r.left, y:(evt.clientY??t.clientY)-r.top}; }
-svg.addEventListener('pointerdown', e=>{ dragging=true; const p=pointerPos(e); lastX=p.x; lastY=p.y; });
-svg.addEventListener('pointermove', e=>{
-  if(!dragging) return;
-  const p=pointerPos(e);
-  // 下端質点にインパルス（速度相当=位置の差）を与える
-  const i=N-1; pts[i].px -= (p.x-lastX)*0.5; pts[i].py -= (p.y-lastY)*0.5;
-  lastX=p.x; lastY=p.y;
-});
-window.addEventListener('pointerup', ()=>dragging=false);
+/*********************************
+ * セットアップ & ループ
+ *********************************/
+const svg = document.getElementById('stage');
+const ropeShort = new Rope(100, 60);   // 左上アンカー
+const ropeUser  = new Rope(450, 60);   // 右上アンカー
+const ropeSys   = new Rope(450, 240);  // 右下アンカー
 
-/* ===== 物理ステップ（Verlet） ===== */
+// DOM 紐付け
+ropeShort.attach(
+  document.getElementById('rope-short'),
+  document.getElementById('bob-short')
+);
+ropeUser.attach(
+  document.getElementById('rope-user'),
+  document.getElementById('bob-user')
+);
+ropeSys.attach(
+  document.getElementById('rope-sys'),
+  document.getElementById('bob-sys')
+);
+
+// システム出力のローパス用状態
+let sys = { x: 0, y: 0 };
+const SYS_ALPHA = 0.08; // 小さいほど遅延・平滑化が強い
+
 let lastT = performance.now();
-function step(now){
-  const dt = Math.min(0.033, (now-lastT)/1000); lastT=now;
-  const dt2 = dt*dt;
+function loop(t){
+  const dt = Math.min(0.032, (t - lastT) / 1000); // 安定のため最大32ms
+  lastT = t;
 
-  // 1) 力：下向き重力 + 横力（傾き）
-  const ax = tiltX * GAIN_X * invert;
-  const ay = GRAVITY_Y;
+  // 端末傾き→画面座標の“擬似重力”を px単位の加速度にスケール
+  // 係数は見た目調整。y方向は常時+1g程度を足して下向きにする。
+  const ax = tilt.x * 120;              // 入力スケール
+  const ay = (tilt.y + 1.0) * 120;
 
-  for(let i=1;i<N;i++){ // 先頭は固定なので除外
-    const p = pts[i];
-    const vx = (p.x - p.px)*(1 - AIR_DAMP);
-    const vy = (p.y - p.py)*(1 - AIR_DAMP);
-    p.px = p.x; p.py = p.y;
-    p.x += vx + ax*dt2;
-    p.y += vy + ay*dt2;
-  }
+  // ショートサーキット型：入力=出力=同一（黒）
+  ropeShort.step(ax, ay, dt);
 
-  // 2) 制約：アンカー固定
-  pts[0].x = anchor.x; pts[0].y = anchor.y;
+  // 分離型：ユーザー入力（青）は生値を使用
+  ropeUser.step(ax, ay, dt);
 
-  // 3) 距離制約（反復）
-  for(let k=0;k<ITER;k++){
-    // 先頭固定
-    pts[0].x = anchor.x; pts[0].y = anchor.y;
+  // 分離型：システム出力（赤）はローパス処理（遅延・平滑化）
+  sys.x += (ax - sys.x) * SYS_ALPHA;
+  sys.y += (ay - sys.y) * SYS_ALPHA;
+  ropeSys.step(sys.x, sys.y, dt);
 
-    for(let i=0;i<N-1;i++){
-      const p1 = pts[i], p2 = pts[i+1];
-      let dx = p2.x - p1.x, dy = p2.y - p1.y;
-      const dist = Math.hypot(dx,dy) || 1;
-      const diff = (dist - SEG_LEN) / dist;
-      // 端点ごとに半分ずつ修正（先頭は固定で動かさない）
-      const correctionX = dx*diff*0.5, correctionY = dy*diff*0.5;
-      if(i>0){ p1.x += correctionX; p1.y += correctionY; }
-      p2.x -= correctionX; p2.y -= correctionY;
-    }
-  }
-
-  // 4) 描画（滑らかなパス）
-  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-  for(let i=1;i<N;i++){
-    d += ` L ${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)}`;
-  }
-  rope.setAttribute('d', d);
-  bob.setAttribute('cx', pts[N-1].x);
-  bob.setAttribute('cy', pts[N-1].y);
-
-  requestAnimationFrame(step);
+  requestAnimationFrame(loop);
 }
-requestAnimationFrame(step);
 
-/* ===== ちょい微調整したい人向け：数値ここ変えると効きます =====
-   - もっと“プラプラ”→ ITERを少し下げる(6) or AIR_DAMPを下げる(0.005)
-   - コシ強く→ ITER上げ(10〜12) / SEG_LENを短く / AIR_DAMP少し上げ
-   - 反応を強める→ GAIN_X を 1200, 1500… と増やす
-   - 小刻みなブレ→ DEADZONE を 0.03〜0.05 に
-*/
-</script>
-</body>
+// 起動
+enableMotionIfNeeded();
+requestAnimationFrame(loop);
+</script></body>
 </html>
