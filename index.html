@@ -101,7 +101,6 @@ class Rope{
  * デバイス傾き入力
  *********************************/
 let tilt = { x: 0, y: 1 }; // 画面座標系：右(+x)・下(+y)方向の“重力”成分
-let MIRROR = false;        // 左右反転フラグ（trueでX成分の符号を反転）
 
 function screenAngle(){
   if(screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
@@ -211,8 +210,8 @@ requestAnimationFrame(loop);
 // 左右反転ボタン
 const btnMirror = document.getElementById('toggle-mirror');
 btnMirror.addEventListener('click', ()=>{
-  MIRROR = !MIRROR;
-  document.body.classList.toggle('mirror', MIRROR);
+  MIRROR_X = !MIRROR_X; // 見た目は一切変えず、入力Xの符号だけを切り替える
+  btnMirror.textContent = MIRROR_X ? '左右反転（入力：ON）' : '左右反転（入力）';
 });
 </script></body>
 </html>
