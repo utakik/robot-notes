@@ -66,7 +66,7 @@ class Rope{
 
     this.N = 12;       // ノード数
 
-    this.SEG = 10;     // セグメント長（px）
+    this.SEG = 15;     // セグメント長（px）
 
     this.ITER = 6;     // 拘束反復回数
 
@@ -258,11 +258,11 @@ function onMotion(e){
 
  *********************************/
 
-const ropeShort = new Rope(100, 60);   // 左上アンカー
+const ropeShort = new Rope(300, 40);   // 左上アンカー
 
-const ropeUser  = new Rope(450, 60);   // 右上アンカー
+const ropeUser  = new Rope(300, 40);   // 右上アンカー
 
-const ropeSys   = new Rope(450, 240);  // 右下アンカー
+const ropeSys   = new Rope(300, 40);  // 右下アンカー
 
 ropeShort.attach(document.getElementById('rope-short'), document.getElementById('bob-short'));
 
