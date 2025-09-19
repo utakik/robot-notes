@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tilt Control (live log, no save)</title>
+  <style>
+    :root{--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,sans-serif;margin:16px}
+    header{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{padding:8px 14px;font-size:16px}
+    .stat{font-variant-numeric:tabular-nums;font-family:var(--mono)}
+    #log{border:1px solid #ddd;height:44vh;overflow:auto;padding:10px;background:#fff;font-family:var(--mono);line-height:1.35}
+    .muted{color:#666}
+    label{display:inline-flex;align-items:center;gap:6px}
+    input[type="number"]{width:64px}
+  </style>
+</head>
+<body>
+  <header>
+    <button id="startBtn">▶ Tilt を開始</button>
+    <button id="stopBtn" disabled>■ 停止</button>
+    <label class="muted">FPS <input type="number" id="fps" min="1" max="60" value="10" /></label>
+    <span class="stat" id="status">idle</span>
+  </header>
+
+  <p class="muted">このページは <strong>保存しません</strong>。画面でリアルタイム表示のみ。</p>
+  <div class="stat" id="now">—</div>
+  <pre id="log" aria-live="polite"></pre>
+
+  <script>
+    const logEl=document.getElementById('log');
+    const statusEl=document.getElementById('status');
+    const nowEl=document.getElementById('now');
+    const startBtn=document.getElementById('startBtn');
+    const stopBtn=document.getElementById('stopBtn');
+    const fpsInput=document.getElementById('fps');
+
+    let running=false,lastEmit=0,handlerMotion=null,handlerOrient=null;
+    const MAX_LINES=400,lines=[];
+    const fmt2=n=>(n===null||n===undefined)?'   —   ':n.toFixed(2).padStart(7);
+    const ts=()=>new Date().toLocaleTimeString();
+    function append(line){lines.push(line);if(lines.length>MAX_LINES)lines.shift();logEl.textContent=lines.join('\n');logEl.scrollTop=logEl.scrollHeight;}
+    function setStatus(t){statusEl.textContent=t;}
+
+    async function requestMotionPermissionIfNeeded(){
+      const DME=window.DeviceMotionEvent;
+      if(DME && typeof DME.requestPermission==='function'){
+        try{const r=await DME.requestPermission();return r==='granted';}catch{return false;}
+      }
+      return true;
+    }
+
+    async function start(){
+      if(running) return;
+      const ok=await requestMotionPermissionIfNeeded();
+      if(!ok){setStatus('permission denied');return;}
+      running=true; startBtn.disabled=true; stopBtn.disabled=false; setStatus('listening…');
+
+      const targetInterval=1000/Math.max(1,Math.min(60,Number(fpsInput.value)||10));
+      handlerMotion=(ev)=>{
+        const t=performance.now(); if(t-lastEmit<targetInterval) return; lastEmit=t;
+        const a=ev.accelerationIncludingGravity||{}, r=ev.rotationRate||{};
+        const line=`[${ts()}] ax:${fmt2(a.x)} ay:${fmt2(a.y)} az:${fmt2(a.z)}  alpha°/s:${fmt2(r.alpha)} beta°/s:${fmt2(r.beta)} gamma°/s:${fmt2(r.gamma)}`;
+        append(line); nowEl.textContent=line;
+      };
+      handlerOrient=(ev)=>{ /* 端末姿勢。必要なら append する */ };
+      window.addEventListener('devicemotion',handlerMotion,{passive:true});
+      window.addEventListener('deviceorientation',handlerOrient,{passive:true});
+      append(`--- start @ ${new Date().toLocaleString()} ---`);
+    }
+    function stop(){
+      if(!running) return;
+      running=false; startBtn.disabled=false; stopBtn.disabled=true; setStatus('stopped');
+      window.removeEventListener('devicemotion',handlerMotion);
+      window.removeEventListener('deviceorientation',handlerOrient);
+      append(`--- stop  @ ${new Date().toLocaleString()} ---`);
+    }
+    startBtn.addEventListener('click',start);
+    stopBtn.addEventListener('click',stop);
+
+    if(location.protocol!=='https:' && location.hostname!=='localhost'){
+      setStatus('⚠ HTTPSで開くとセンサーが使えます（GitHub PagesはOK）');
+    }
+  </script>
+</body>
+</html>
